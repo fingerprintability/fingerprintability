@@ -3,8 +3,7 @@ Source code for the data collection and analysis used in the 'How unique is your
 
 
 ## Data collection
-We used [tor-browser-selenium](https://github.com/webfp/tor-browser-selenium) and [tor-browser-crawler](https://github.com/webfp/tor-browser-crawler) libraries to collect data from the Onion services:
-https://github.com/webfp
+We used [tor-browser-selenium](https://github.com/webfp/tor-browser-selenium) and [tor-browser-crawler](https://github.com/webfp/tor-browser-crawler) libraries to collect data from the Onion services.
 
 ## Credits
 We used code from the following papers/projects. We thank respective authors for being kind to share their code:
