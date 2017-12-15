@@ -954,6 +954,8 @@ def combine_high_level_instance_features(crawl_dir):
 
 
 if __name__ == '__main__':
+    # Run the following for site level feature extraction and aggregation:
+    # python crawl_data.py -i CRAWL_DATA_DIR -t crawl_stats
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s - %(levelname)s - %(message)s')
     args = sys.argv[1:]
