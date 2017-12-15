@@ -10,8 +10,10 @@ CELL_SIZE = 512
 # default num instances per batch
 INSTANCES_PER_BATCH = 5
 
-# ip of the crawl instance
-IP_DO = 'xxx.xxx.xxx.xxx'
+# IP address of the cloud based crawl instance
+# This IP address is not used anymore.
+CRAWLER_IP_FIRST_TWO_OCTETS = '107.170'
+
 
 # paths
 BASE_DIR = dirname(dirname(realpath(__file__)))

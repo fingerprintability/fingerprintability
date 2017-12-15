@@ -12,8 +12,7 @@ sys.path.insert(0, dirname(dirname((dirname(realpath(__file__))))))
 
 from multiprocessing import Pool, Lock
 from itertools import izip
-# from hashes.simhash import simhash
-import simhash  # https://github.com/seomoz/simhash-py
+from hashes.simhash import simhash
 from collections import defaultdict
 from variance.utils import dup_detect
 from variance.utils import gen_utils
@@ -21,11 +20,10 @@ from variance.utils import file_utils as fu
 from variance import common as cm
 from urlparse import urlparse
 from variance.utils.parallelizer import multiproc
-from variance.utils.common import IP_DO
+from variance.utils.common import CRAWLER_IP_FIRST_TWO_OCTETS
 from bs4 import BeautifulSoup
 
 import pandas as pd
-import numpy as np
 from scipy import stats
 
 # ad and tracking detection
@@ -34,6 +32,12 @@ easylist_rules = AdblockRules(open("abp_rules/easylist.txt").readlines())
 easyprivacy_rules = AdblockRules(open("abp_rules/easyprivacy.txt").readlines())
 
 
+# For debugging, try disabling parallel processing
+# to get more helpful tracebacks.
+RUN_IN_PARALLEL = True
+
+# if true, only process extract feats from selected instances
+PROCESS_SELECTED_INSTANCES_ONLY = True
 
 REMOVE_RETRANSMISSIONS = True
 USE_TSHARK_TCP_PAYLOAD = False
@@ -91,7 +95,7 @@ class VisitInfo(object):
         self.site_domain = 0  # abc.onion
         self.visit_dir = ""  # path to dir holding the visit files
 
-        self.pcap_size = 0
+        self.pcap_size = 0   # size of the pcap file
         self.html_src_size = 0
         self.screenshot_size = 0  # image size in bytes
 
@@ -145,6 +149,17 @@ class VisitInfo(object):
         # update __repr__ method when you add a new attribute
 
     def col_headers(self):
+        """The prefixes in column names determine how we use and aggregate this colum.
+
+        For meta-analysis we aggregate site level features over the 70 visits
+        we have for each site.
+
+        PREFIX meanings:
+            i_   -> IGNORE, don't use this column in the meta analysis.
+            med_ -> MEDIAN, use median to aggregate this feature.
+            mo_  ->   MODE, use mode to aggregate this feature.
+
+        """
         return "i_site_domain\ti_batch_num\ti_instance_num\t"\
             "i_visit_success\tmed_num_http_req\t"\
             "med_num_http_resp\tmed_total_http_download\t"\
@@ -426,11 +441,6 @@ def get_selected_domains_and_instances(crawl_dir):
     return list(selected_domains), selected_instances
 
 
-RUN_IN_PARALLEL = True
-# if true, only process extract feats from selected instances
-PROCESS_SELECTED_INSTANCES_ONLY = True
-
-
 def get_crawl_stats(crawl_dir):
     crawl_info = CrawlInfo()
     crawl_info.crawl_dir = crawl_dir
@@ -440,7 +450,7 @@ def get_crawl_stats(crawl_dir):
         crawl_info.crawled_domains = get_batch_and_instance_counts(crawl_dir)
     crawl_name = basename(normpath(crawl_dir))
     hi_level_feats_csv = join(dirname(dirname((dirname(realpath(__file__))))),
-                              "data", "high_level_feats", "%s_hi_level_feats.csv" % crawl_name)
+                              "data", "%s_hi_level_feats.csv" % crawl_name)
 
     dummy = VisitInfo()
     fu.write_to_file(hi_level_feats_csv, dummy.col_headers())
@@ -459,7 +469,7 @@ def get_crawl_stats(crawl_dir):
                        [crawl_info] * num_domains))
     else:
         for domain in domains_to_process:
-            parse_crawl_data_for_domain(crawl_info, domain, hi_level_feats_csv)
+            parse_crawl_data_for_domain(domain, hi_level_feats_csv, crawl_info)
 
 
 PRINT_VISITS_WITH_ERRORS = False
@@ -494,9 +504,6 @@ def get_visit_info(visit_dir, crawl_info):
     if isfile(pcap_file):
         visit_info.pcap_file = pcap_file
         visit_info.pcap_size = getsize(pcap_file)
-    else:  # if no pcap, there shouldn't be any tshark file
-        assert visit_info.tshark_file is None
-        # print "NO PCAP", pcap_file
 
     if isfile(screenshot_file):
         visit_info.screenshot_file = screenshot_file
@@ -523,7 +530,7 @@ def get_visit_info_from_tshark(tshark_file, visit_info):
     if not len(pkt_info_arr):
         return
     for pkt_info in pkt_info_arr:
-        if pkt_info.src_ip == IP_DO:
+        if pkt_info.src_ip.startswith(CRAWLER_IP_FIRST_TWO_OCTETS):
             total_uplink_data += pkt_info.tcp_payload_size
         else:
             total_downlink_data += pkt_info.tcp_payload_size
@@ -702,7 +709,7 @@ def process_source_html(html_src_file, visit_info):
         visit_info.html_src_size = len(html_src)
         visit_info.fx_conn_error = is_moz_error_txt(html_src)
         visit_info.html_src_hash = mmh3.hash(html_src)
-        visit_info.html_src_simhash = simhash.hash(html_src)
+        visit_info.html_src_simhash = simhash(html_src)
         if not visit_info.fx_conn_error:
             visit_info.page_title = get_page_title_from_html_src(html_src)
             populate_site_generator(html_src, visit_info)
@@ -804,12 +811,11 @@ def process_crawl_csv(crawl_dir, csv_name):
         num_http_resp, total_http_download, total_http_upload, http_duration,\
         tshark_duration, screenshot_hash, html_src_hash, pcap_size, html_src_size,\
         screenshot_size, page_title, html_src_simhash = items
-        if visit_success == "0" or \
-            html_src_size == "0" or \
-            pcap_size == "0" or \
-            screenshot_size == "0" or \
-            html_src_hash == "1879059922" or \
-            screenshot_hash in ["0", "1373743527"]:  # hash of the empty, white image
+        if (visit_success == "0" or
+            html_src_size == "0" or
+            screenshot_size == "0" or
+            html_src_hash == "1879059922" or
+                screenshot_hash in ["0", "1373743527"]):  # hash of the empty, white image
             domain_fail_count[site_domain] += 1
         else:
             visit_dir = join(crawl_dir, "%s_%s_%s" % (batch_num, site_domain, instance_num))
@@ -818,7 +824,7 @@ def process_crawl_csv(crawl_dir, csv_name):
             domain_screenshot_hashes[site_domain].add(screenshot_hash)
             domain_html_src_hashes[site_domain].add(html_src_hash)
             domain_html_src_simhashes[site_domain].add(html_src_simhash)
-            if len(page_title) and not page_title in ["index of /"]:  # file indexes/explorer
+            if len(page_title) and page_title not in ["index of /"]:  # file indexes/explorer
                 domain_titles[site_domain].add(page_title)
     return (domain_fail_count, domain_screenshot_hashes, domain_html_src_hashes,
             domain_html_src_simhashes, domain_titles, domain_req_paths)
@@ -850,12 +856,11 @@ def check_csv_data(crawl_dir, csv_name):
                 continue
             assert ".onion" in site_domain
             hash_freq_dict[screenshot_hash] += 1
-            if visit_success == "0" or \
-                html_src_size == "0" or \
-                pcap_size == "0" or \
-                screenshot_size == "0" or \
+            if (visit_success == "0" or
+                html_src_size == "0" or
+                screenshot_size == "0" or
                 screenshot_hash in ["0",
-                                    "5e13a221e8222d50b5233cfbe805c325c5fa96e6"]:  # invalid hash  # noqa
+                                    "5e13a221e8222d50b5233cfbe805c325c5fa96e6"]):  # invalid hash  # noqa
                 domain_fail_count[site_domain] += 1
             else:
                 # if visit_success == "1" and screenshot_hash == "0":
@@ -898,11 +903,20 @@ def sort_print_dict(_dict, print_thresh=0):
 
 
 def combine_high_level_instance_features(crawl_dir):
+    """Aggregate site level features of a HS site.
+
+    We use median or mode to aggreagete features from 70 visits
+    of a website. The aggregated features are used by the meta-learner
+    to analyze the relation between the fingprintability of a site and
+    its site-level features.
+    """
     crawl_name = basename(normpath(crawl_dir))
     hi_level_feats_csv = join(dirname(dirname((dirname(realpath(__file__))))),
-                              "data", "high_level_feats", "%s_hi_level_feats.csv" % crawl_name)
+                              "data",
+                              "%s_hi_level_feats.csv" % crawl_name)
     fability_scores_csv = join(dirname(dirname((dirname(realpath(__file__))))),
-                              "data", "results", crawl_name, "fp_regression_labels.csv")
+                               "data",
+                               "%s_fp_regression_labels.csv" % crawl_name)
     # headers: url    avg_f1    max_f1    avg_tpr    max_tpr
     fability_df = pd.read_csv(fability_scores_csv,  sep=',')
     df = pd.read_csv(hi_level_feats_csv,  sep='\t')
@@ -913,6 +927,7 @@ def combine_high_level_instance_features(crawl_dir):
         instance_feats = df[df.i_site_domain == domain]
         # print domain, "fability", fability_df[fability_df.url == domain]
         for feat_name in instance_feats.columns:
+            # Ignore features that starts with i_
             if feat_name.startswith("i_"):
                 continue
             feat_var_name = feat_name.replace("mo_", "var_").replace("med_", "var_")
@@ -933,7 +948,7 @@ def combine_high_level_instance_features(crawl_dir):
     for feat in sorted(aggreage_feats.keys()):
         assert len(aggreage_feats[feat]) == 482
         fability_df[feat] = aggreage_feats[feat]
-    # write the csv
+    # write the _aggregated high level feature file csv
     fability_df.to_csv(hi_level_feats_csv.replace(".csv", "_aggregated.csv"),
                        sep="\t", index=False, index_label=False)
 

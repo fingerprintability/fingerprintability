@@ -1,0 +1,5 @@
+python-hashes
+scipy
+mmh3
+beautifulsoup4
+-e git://github.com/scrapinghub/adblockparser#egg=adblockparser
